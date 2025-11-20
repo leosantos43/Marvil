@@ -1,24 +1,11 @@
 {
   "name": "eletrica-marvil-system",
-  "version": "1.0.0",
-
-  "engines": {
-    "node": "18.x"
-  },
-
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  ...
-}
-
-{
-  "name": "eletrica-marvil-system",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
