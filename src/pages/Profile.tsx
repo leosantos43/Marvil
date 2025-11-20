@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../supabase'
+import { supabase } from "../lib/supabase";
 import { useAuthStore } from '../store/authStore'
 import type { Profile } from '../types'
 
