@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Elétrica Marvil System",
+  "description": "A professional, production-ready management system for Elétrica Marvil with Supabase integration, role-based access control, and realtime features.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

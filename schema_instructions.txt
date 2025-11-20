@@ -1,0 +1,294 @@
+
+-- ⚠️ IMPORTANT: RUN THIS ENTIRE SCRIPT IN SUPABASE SQL EDITOR TO FIX & SETUP THE DB ⚠️
+-- Project ID: xvzodsnsjwzdacrdzcdk
+
+-- 1. CLEANUP TRIGGERS & FUNCTIONS
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP FUNCTION IF EXISTS public.handle_new_user();
+DROP FUNCTION IF EXISTS public.is_admin() CASCADE; 
+
+-- 2. Create ENUMs (Safe handling)
+DO $$ BEGIN
+    CREATE TYPE user_role AS ENUM ('admin', 'funcionario', 'cliente');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE project_status AS ENUM ('aberta', 'concluida', 'pausada');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE expense_status AS ENUM ('pendente', 'aprovado', 'rejeitado');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+-- 3. CREATE TABLES IF NOT EXISTS
+CREATE TABLE IF NOT EXISTS users_profiles (
+  id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  role user_role DEFAULT 'funcionario',
+  phone TEXT,
+  active BOOLEAN DEFAULT TRUE,
+  avatar_url TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS responsaveis (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT,
+  phone TEXT,
+  notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS obras (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT NOT NULL,
+  address TEXT NOT NULL,
+  city TEXT NOT NULL,
+  client_id UUID REFERENCES responsaveis(id),
+  start_date DATE,
+  end_date_prediction DATE,
+  status project_status DEFAULT 'aberta',
+  description TEXT,
+  total_value DECIMAL(10,2) DEFAULT 0,
+  amount_received DECIMAL(10,2) DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Ensure columns exist
+DO $$ 
+BEGIN 
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'obras' AND column_name = 'total_value') THEN
+    ALTER TABLE obras ADD COLUMN total_value DECIMAL(10,2) DEFAULT 0;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'obras' AND column_name = 'amount_received') THEN
+    ALTER TABLE obras ADD COLUMN amount_received DECIMAL(10,2) DEFAULT 0;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS obra_funcionarios (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  project_id UUID REFERENCES obras(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users_profiles(id) ON DELETE CASCADE,
+  assigned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(project_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS gastos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  project_id UUID REFERENCES obras(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users_profiles(id),
+  type TEXT CHECK (type IN ('alimentacao', 'transporte', 'outros')),
+  amount DECIMAL(10,2) NOT NULL,
+  date DATE NOT NULL,
+  description TEXT,
+  receipt_url TEXT,
+  status expense_status DEFAULT 'pendente',
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS materiais_obra (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  obra_id UUID REFERENCES obras(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  unit_price DECIMAL(10,2) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS project_documents (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  project_id UUID REFERENCES obras(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  type TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  project_id UUID REFERENCES obras(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users_profiles(id),
+  message TEXT NOT NULL,
+  attachment_url TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS app_chat_messages (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  sender_id UUID REFERENCES users_profiles(id) NOT NULL,
+  receiver_id UUID REFERENCES users_profiles(id),
+  message TEXT NOT NULL,
+  read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Ensure read column exists
+DO $$ 
+BEGIN 
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'app_chat_messages' AND column_name = 'read') THEN
+    ALTER TABLE app_chat_messages ADD COLUMN read BOOLEAN DEFAULT FALSE;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES users_profiles(id),
+  action TEXT NOT NULL,
+  details TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 4. ENABLE ROW LEVEL SECURITY
+ALTER TABLE users_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE obras ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gastos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE responsaveis ENABLE ROW LEVEL SECURITY;
+ALTER TABLE materiais_obra ENABLE ROW LEVEL SECURITY;
+ALTER TABLE project_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE obra_funcionarios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- 4.5 HELPER FUNCTIONS (SECURITY DEFINER IS CRITICAL FOR RLS)
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM users_profiles
+    WHERE id = auth.uid() AND role = 'admin'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 5. DROP ALL EXISTING POLICIES (CLEAN SLATE)
+-- Dropping aggressively to ensure no conflicts remain
+DO $$ 
+DECLARE 
+  r RECORD; 
+BEGIN 
+  FOR r IN (SELECT policyname, tablename FROM pg_policies WHERE schemaname = 'public') LOOP 
+    EXECUTE 'DROP POLICY IF EXISTS "' || r.policyname || '" ON ' || r.tablename; 
+  END LOOP; 
+END $$;
+
+-- 6. CREATE NEW ROBUST POLICIES
+
+-- --- USERS PROFILE ---
+CREATE POLICY "Admin Full Access Profiles" ON users_profiles FOR ALL USING (is_admin());
+CREATE POLICY "Read All Profiles" ON users_profiles FOR SELECT USING (auth.role() = 'authenticated');
+CREATE POLICY "Update Self Profile" ON users_profiles FOR UPDATE USING (auth.uid() = id);
+
+-- --- OBRAS (PROJECTS) ---
+CREATE POLICY "Admin Full Access Obras" ON obras FOR ALL USING (is_admin());
+
+-- Employees: Can see project if they are in the assignments table OR if they are admin
+-- Note: We rely on the fact that Authenticated users can read obra_funcionarios
+CREATE POLICY "View Assigned Obras" ON obras FOR SELECT USING (
+  is_admin() 
+  OR 
+  EXISTS (SELECT 1 FROM obra_funcionarios WHERE project_id = obras.id AND user_id = auth.uid())
+);
+
+-- --- OBRA FUNCIONARIOS (TEAM ASSIGNMENTS) - CRITICAL FIX ---
+-- Admin can do EVERYTHING (Insert, Update, DELETE)
+CREATE POLICY "Admin Manage Assignments" ON obra_funcionarios FOR ALL USING (is_admin());
+
+-- Everyone can READ assignments. This fixes the "Employee can't see their projects" issue
+-- because the join or subquery requires read access to this table.
+CREATE POLICY "Read Assignments" ON obra_funcionarios FOR SELECT USING (auth.role() = 'authenticated');
+
+-- --- GASTOS (EXPENSES) ---
+CREATE POLICY "Admin Manage Gastos" ON gastos FOR ALL USING (is_admin());
+CREATE POLICY "Employee Manage Own Gastos" ON gastos FOR ALL USING (auth.uid() = user_id);
+
+-- --- RESPONSAVEIS (CLIENTS) ---
+CREATE POLICY "Admin Manage Responsaveis" ON responsaveis FOR ALL USING (is_admin());
+CREATE POLICY "Read Responsaveis" ON responsaveis FOR SELECT USING (auth.role() = 'authenticated');
+
+-- --- MATERIAIS ---
+CREATE POLICY "Admin Manage Materiais" ON materiais_obra FOR ALL USING (is_admin());
+CREATE POLICY "View Materiais" ON materiais_obra FOR SELECT USING (
+  is_admin() OR EXISTS (SELECT 1 FROM obra_funcionarios WHERE project_id = materiais_obra.obra_id AND user_id = auth.uid())
+);
+
+-- --- DOCUMENTS ---
+CREATE POLICY "Admin Manage Documents" ON project_documents FOR ALL USING (is_admin());
+
+-- --- MESSAGES (Project Chat) ---
+CREATE POLICY "Project Chat Access" ON messages FOR ALL USING (
+  is_admin() OR EXISTS (SELECT 1 FROM obra_funcionarios WHERE project_id = messages.project_id AND user_id = auth.uid())
+);
+
+-- --- APP CHAT (Global) ---
+CREATE POLICY "Send Chat Message" ON app_chat_messages FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "Read Chat Messages" ON app_chat_messages FOR SELECT USING (
+  receiver_id IS NULL OR sender_id = auth.uid() OR receiver_id = auth.uid()
+);
+CREATE POLICY "Update Read Status" ON app_chat_messages FOR UPDATE USING (receiver_id = auth.uid());
+
+-- --- LOGS ---
+CREATE POLICY "Admin View Logs" ON audit_logs FOR SELECT USING (is_admin());
+CREATE POLICY "Insert Logs" ON audit_logs FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+
+
+-- 7. TRIGGER FOR NEW USERS
+CREATE OR REPLACE FUNCTION public.handle_new_user() 
+RETURNS trigger AS $$
+DECLARE
+  username text;
+  user_role public.user_role;
+BEGIN
+  IF new.raw_user_meta_data->>'full_name' IS NOT NULL THEN
+    username := new.raw_user_meta_data->>'full_name';
+  ELSE
+    username := new.email;
+  END IF;
+
+  IF new.raw_user_meta_data->>'is_admin_setup' = 'true' THEN
+    user_role := 'admin';
+  ELSE
+    user_role := 'funcionario';
+  END IF;
+
+  INSERT INTO public.users_profiles (id, email, full_name, role, active)
+  VALUES (new.id, new.email, username, user_role, TRUE)
+  ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email;
+    
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- 8. ADMIN PASSWORD RESET RPC
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION public.admin_reset_password(target_user_id UUID, new_password TEXT)
+RETURNS VOID AS $$
+BEGIN
+  IF NOT is_admin() THEN
+    RAISE EXCEPTION 'Acesso negado.';
+  END IF;
+
+  UPDATE auth.users
+  SET encrypted_password = crypt(new_password, gen_salt('bf'))
+  WHERE id = target_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 9. STORAGE POLICIES
+DROP POLICY IF EXISTS "Public Access Comprovantes" ON storage.objects;
+DROP POLICY IF EXISTS "Auth Upload Comprovantes" ON storage.objects;
+DROP POLICY IF EXISTS "Admin Files Access" ON storage.objects;
+DROP POLICY IF EXISTS "Admin Files Upload" ON storage.objects;
+
+CREATE POLICY "Public Access Comprovantes" ON storage.objects FOR SELECT USING ( bucket_id = 'comprovantes' );
+CREATE POLICY "Auth Upload Comprovantes" ON storage.objects FOR INSERT WITH CHECK ( bucket_id = 'comprovantes' AND auth.role() = 'authenticated' );
+
+CREATE POLICY "Admin Files Access" ON storage.objects FOR SELECT USING ( bucket_id = 'project-files' AND auth.role() = 'authenticated' );
+CREATE POLICY "Admin Files Upload" ON storage.objects FOR INSERT WITH CHECK ( bucket_id = 'project-files' AND is_admin() );
