@@ -1,42 +1,34 @@
-import React, { useEffect, useRef, useState } from "react";
-import { supabase } from "../lib/supabase";
-import { Send, Paperclip } from "lucide-react";
-import { useAuthStore } from "../store/authStore";
 
-interface Props {
+import React, { useEffect, useRef, useState } from 'react';
+import { supabase } from '../lib/supabase';
+import { ChatMessage } from '../types';
+import { Send, Paperclip } from 'lucide-react';
+
+interface ChatProps {
   projectId: string;
   userId: string;
 }
 
-export const Chat: React.FC<Props> = ({ projectId, userId }) => {
-  const { profile } = useAuthStore();
-
-  const [messages, setMessages] = useState<any[]>([]);
-  const [message, setMessage] = useState("");
-  const [sending, setSending] = useState(false);
-
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  // 🔥 Ajustes de responsividade
-  const scrollToBottom = () => {
-    setTimeout(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, 50);
-  };
+export const Chat: React.FC<ChatProps> = ({ projectId, userId }) => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchMessages();
 
+    // Realtime Subscription
     const channel = supabase
-      .channel(`chat-${projectId}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "project_chat", filter: `project_id=eq.${projectId}` },
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new]);
-          scrollToBottom();
-        }
-      )
+      .channel(`chat:${projectId}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'messages', 
+        filter: `project_id=eq.${projectId}` 
+      }, (payload) => {
+        // Ideally fetch the user profile for the new message or optimize payload
+        fetchNewMessageWithProfile(payload.new.id);
+      })
       .subscribe();
 
     return () => {
@@ -44,92 +36,93 @@ export const Chat: React.FC<Props> = ({ projectId, userId }) => {
     };
   }, [projectId]);
 
+  const fetchNewMessageWithProfile = async (msgId: string) => {
+    const { data } = await supabase.from('messages').select('*, profile:users_profiles(*)').eq('id', msgId).single();
+    if (data) {
+      setMessages(prev => {
+        // Avoid duplicate messages if fast switching
+        if (prev.find(m => m.id === msgId)) return prev;
+        const newState = [...prev, data];
+        // Sort again to be safe
+        return newState.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      });
+      scrollToBottom();
+    }
+  };
+
   const fetchMessages = async () => {
     const { data } = await supabase
-      .from("project_chat")
-      .select("*, profile:users_profiles(*)")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: true });
-
+      .from('messages')
+      .select('*, profile:users_profiles(*)')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: true });
     setMessages(data || []);
     scrollToBottom();
   };
 
-  const sendMessage = async () => {
-    if (!message.trim() || sending) return;
+  const scrollToBottom = () => {
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
 
-    setSending(true);
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim()) return;
 
-    await supabase.from("project_chat").insert({
+    const { error } = await supabase.from('messages').insert({
       project_id: projectId,
       user_id: userId,
-      message,
+      message: newMessage
     });
 
-    setMessage("");
-    setSending(false);
-    scrollToBottom();
+    if (!error) {
+      setNewMessage('');
+    } else {
+      console.error("Error sending message:", error);
+      alert("Erro ao enviar mensagem. Verifique sua conexão.");
+    }
   };
 
   return (
-    <div className="flex flex-col h-full max-h-[88vh] md:max-h-[600px]">
+    <div className="flex flex-col h-full bg-marvil-dark border border-marvil-border rounded-lg overflow-hidden shadow-2xl">
+      <div className="bg-marvil-card p-4 border-b border-marvil-border">
+        <h3 className="text-white font-bold flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+          Chat da Obra
+        </h3>
+      </div>
 
-      {/* AREA DE MENSAGENS */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 scrollbar-thin scrollbar-thumb-marvil-orange/50 scrollbar-track-transparent">
-
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#0a0a0a]">
         {messages.map((msg) => {
-          const isMine = msg.user_id === userId;
-
+          const isMe = msg.user_id === userId;
           return (
-            <div
-              key={msg.id}
-              className={`flex w-full ${isMine ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-[80%] md:max-w-[60%] p-3 rounded-lg text-sm shadow-md 
-                  ${isMine ? "bg-marvil-orange text-white" : "bg-marvil-dark border border-marvil-border text-gray-200"}
-                `}
-              >
-                {!isMine && (
-                  <p className="text-xs text-gray-400 mb-1 font-semibold">
-                    {msg.profile?.full_name}
-                  </p>
-                )}
-
-                <p>{msg.message}</p>
-
-                <p className="text-[10px] text-gray-400 text-right mt-2">
-                  {new Date(msg.created_at).toLocaleTimeString("pt-BR").slice(0, 5)}
-                </p>
+            <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[70%] rounded-lg p-3 ${isMe ? 'bg-marvil-orange text-white' : 'bg-marvil-card text-gray-200 border border-marvil-border'}`}>
+                {!isMe && <p className="text-xs text-gray-400 font-bold mb-1">{msg.profile?.full_name}</p>}
+                <p className="text-sm whitespace-pre-wrap">{msg.message}</p>
+                <span className="text-[10px] opacity-50 block text-right mt-1">
+                  {new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </span>
               </div>
             </div>
           );
         })}
-
-        <div ref={bottomRef} />
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* INPUT FIXO */}
-      <div className="p-3 bg-marvil-dark border-t border-marvil-border flex items-center gap-3">
-
+      <form onSubmit={handleSend} className="p-4 bg-marvil-card border-t border-marvil-border flex gap-3">
         <input
           type="text"
-          className="flex-1 bg-black/40 text-white p-3 rounded-lg border border-marvil-border focus:border-marvil-orange outline-none text-sm"
-          placeholder="Digite uma mensagem..."
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          className="flex-1 bg-marvil-dark border border-marvil-border rounded px-4 py-2 text-white focus:border-marvil-orange outline-none"
+          placeholder="Digite sua mensagem..."
+          value={newMessage}
+          onChange={(e) => setNewMessage(e.target.value)}
         />
-
-        <button
-          onClick={sendMessage}
-          disabled={sending}
-          className="bg-marvil-orange hover:bg-marvil-orange/80 transition-colors p-3 rounded-lg"
-        >
-          <Send size={18} />
+        <button type="submit" className="p-2 bg-marvil-orange text-white rounded hover:bg-marvil-orangeLight shadow-glow transition-all">
+          <Send size={20} />
         </button>
-
-      </div>
+      </form>
     </div>
   );
 };
