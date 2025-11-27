@@ -1,0 +1,12 @@
+{
+  "build": {
+    "env": {
+      "NODE_VERSION": "24"
+    }
+  },
+  "functions": {
+    "api/**": {
+      "runtime": "nodejs24.x"
+    }
+  }
+}
