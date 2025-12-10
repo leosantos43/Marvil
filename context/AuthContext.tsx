@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef, useCallback } from 'react';
 import { User, UserRole, ChatMessage } from '../types';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
@@ -21,7 +22,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
   
   // Ref para o temporizador de inatividade
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const INACTIVITY_LIMIT = 60 * 1000; // 1 minuto em milissegundos
+  const INACTIVITY_LIMIT = 3 * 60 * 1000; // 3 minutos em milissegundos
 
   // Função auxiliar para buscar o perfil atualizado do banco
   const fetchProfile = async (userId: string, email: string, metadataName?: string, metadataRole?: string) => {
@@ -84,7 +85,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
     inactivityTimerRef.current = setTimeout(() => {
       // Ação quando o tempo expira
       signOut();
-      alert("Sessão encerrada por inatividade (1 minuto).");
+      alert("Sessão encerrada por inatividade (3 minutos).");
     }, INACTIVITY_LIMIT);
   }, [user, INACTIVITY_LIMIT]);
 
