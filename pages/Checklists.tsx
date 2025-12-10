@@ -188,53 +188,37 @@ const Checklists = () => {
   const handleSubmit = async () => {
     if (!selectedProject || !selectedTemplate || !user) return;
     
-    // VALIDATION: Daily Limit
-    if (user.role === 'eletricista') {
-        const todayStr = new Date().toISOString().split('T')[0];
-        const { count, error } = await supabase
+    // VALIDATION: Prevent Duplicate Checklist (Same Template, Same Project, Same Day)
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    try {
+        const { data: duplicates, error: dupError } = await supabase
             .from('checklists')
-            .select('*', { count: 'exact', head: true })
+            .select('id')
             .eq('responsavel_id', user.id)
-            .gte('created_at', `${todayStr}T00:00:00`);
-        
-        if (error) {
-            console.error(error);
-            alert("Erro ao validar limite diário.");
+            .eq('template_id', selectedTemplate.id)
+            .eq('obra_id', selectedProject.id)
+            .eq('data_referencia', todayStr); // Verifica a data de referência exata
+
+        if (dupError) throw dupError;
+
+        if (duplicates && duplicates.length > 0) {
+            alert(`ATENÇÃO: Você já preencheu este checklist ("${selectedTemplate.nome}") para esta obra hoje.\n\nNão é permitido duplicidade no mesmo dia.`);
             return;
         }
 
-        // Fetch limit from DB (system_settings) instead of localStorage
-        let limit = 2; // Default fallback
-        try {
-            const { data: setting } = await supabase
-                .from('system_settings')
-                .select('value')
-                .eq('key', 'checklist_limit')
-                .single();
-            
-            if (setting?.value) {
-                limit = parseInt(setting.value);
-            } else {
-                 // Fallback to localstorage if DB entry missing but localStorage exists
-                 const local = localStorage.getItem('dailyChecklistLimit');
-                 if (local) limit = parseInt(local);
-            }
-        } catch (err) {
-            console.warn("Could not fetch global limit, using default.");
-        }
-
-        if ((count || 0) >= limit) {
-            alert(`LIMITE ATINGIDO: Você já enviou ${count} checklists hoje. O limite diário configurado é ${limit}.`);
-            return;
-        }
+    } catch (err) {
+        console.error("Erro na validação de duplicidade:", err);
+        alert("Erro ao validar checklist. Tente novamente.");
+        return;
     }
 
-    // Prepare Payload - Remove non-existent fields
+    // Prepare Payload
     const payload = {
         template_id: selectedTemplate.id,
         obra_id: selectedProject.id,
         responsavel_id: user.id,
-        data_referencia: new Date().toISOString().split('T')[0],
+        data_referencia: todayStr,
         status: 'concluido',
         respostas: answers
     };
