@@ -203,9 +203,28 @@ const Checklists = () => {
             return;
         }
 
-        const limit = parseInt(localStorage.getItem('dailyChecklistLimit') || '2');
+        // Fetch limit from DB (system_settings) instead of localStorage
+        let limit = 2; // Default fallback
+        try {
+            const { data: setting } = await supabase
+                .from('system_settings')
+                .select('value')
+                .eq('key', 'checklist_limit')
+                .single();
+            
+            if (setting?.value) {
+                limit = parseInt(setting.value);
+            } else {
+                 // Fallback to localstorage if DB entry missing but localStorage exists
+                 const local = localStorage.getItem('dailyChecklistLimit');
+                 if (local) limit = parseInt(local);
+            }
+        } catch (err) {
+            console.warn("Could not fetch global limit, using default.");
+        }
+
         if ((count || 0) >= limit) {
-            alert(`LIMITE ATINGIDO: Você já enviou ${count} checklists hoje. O limite diário é ${limit}.`);
+            alert(`LIMITE ATINGIDO: Você já enviou ${count} checklists hoje. O limite diário configurado é ${limit}.`);
             return;
         }
     }
