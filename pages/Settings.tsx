@@ -310,9 +310,6 @@ ON CONFLICT (key) DO NOTHING;
                                     <Shield size={20} className="text-blue-400" />
                                     Geral e Aparência
                                 </h2>
-                                <button type="button" onClick={() => setShowSqlModal(true)} className="text-xs flex items-center gap-1 text-gray-500 hover:text-primary transition-colors border border-gray-700 px-2 py-1 rounded">
-                                    <Terminal size={12} /> Ver SQL de Configuração
-                                </button>
                             </div>
 
                             <div className="space-y-6">
@@ -373,9 +370,6 @@ ON CONFLICT (key) DO NOTHING;
                                         onChange={e => setChecklistReminder(e.target.value)}
                                         className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:border-primary focus:outline-none"
                                     />
-                                </div>
-                                <div className="flex items-center justify-center p-4 bg-gray-900/50 rounded-lg border border-gray-800 text-gray-500 text-sm italic text-center">
-                                    <p>O limite diário de checklists foi removido. O sistema agora impede duplicidade do mesmo checklist na mesma obra/dia.</p>
                                 </div>
                             </div>
                         </div>
