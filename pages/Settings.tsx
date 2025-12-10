@@ -1,15 +1,15 @@
 
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Database, Save, Download, Shield, CheckCircle, Server, Bell, Moon, Clock, FileText, ToggleLeft, ToggleRight, AlertTriangle, Info, Lock, Key, User, Terminal } from 'lucide-react';
+import { Settings as SettingsIcon, Database, Save, Download, Shield, CheckCircle, Server, Bell, Moon, Clock, FileText, ToggleLeft, ToggleRight, AlertTriangle, Info, Lock, Key, User, Terminal, Copy } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { useAuth } from '../context/AuthContext';
+import Modal from '../components/Modal';
 
 const SettingsPage = () => {
   const { user } = useAuth();
   
   // Local Settings States (Global Logic via DB)
   const [companyName, setCompanyName] = useState(localStorage.getItem('companyName') || 'Elétrica Marvil');
-  const [dailyChecklistLimit, setDailyChecklistLimit] = useState(localStorage.getItem('dailyChecklistLimit') || '2');
   
   // Local Preferences (Browser specific)
   const [notificationsEnabled, setNotificationsEnabled] = useState(localStorage.getItem('notificationsEnabled') !== 'false');
@@ -24,8 +24,38 @@ const SettingsPage = () => {
   const [loading, setLoading] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [dbStatus, setDbStatus] = useState<'checking' | 'online' | 'error'>('checking');
+  
+  // SQL Modal
+  const [showSqlModal, setShowSqlModal] = useState(false);
 
   const isAdmin = user?.role === 'admin';
+
+  const SQL_CONFIG_SCRIPT = `
+-- Cria tabela de configurações globais
+CREATE TABLE IF NOT EXISTS public.system_settings (
+    key text PRIMARY KEY,
+    value text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+-- Habilita RLS
+ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
+
+-- Política: Todos podem ler (para aplicar regras)
+DROP POLICY IF EXISTS "Todos leem settings" ON public.system_settings;
+CREATE POLICY "Todos leem settings" ON public.system_settings FOR SELECT USING (true);
+
+-- Política: Apenas Admin pode alterar
+DROP POLICY IF EXISTS "Admin gerencia settings" ON public.system_settings;
+CREATE POLICY "Admin gerencia settings" ON public.system_settings FOR ALL USING (
+  exists (select 1 from public.profiles where id = auth.uid() and role = 'admin')
+);
+
+-- Insere valores padrão
+INSERT INTO public.system_settings (key, value) VALUES 
+('company_name', 'Elétrica Marvil')
+ON CONFLICT (key) DO NOTHING;
+  `;
 
   // Fetch Global Settings from DB
   useEffect(() => {
@@ -34,10 +64,7 @@ const SettingsPage = () => {
         try {
             const { data, error } = await supabase.from('system_settings').select('key, value');
             if (data) {
-                const limitSetting = data.find(s => s.key === 'checklist_limit');
                 const companySetting = data.find(s => s.key === 'company_name');
-                
-                if (limitSetting) setDailyChecklistLimit(limitSetting.value);
                 if (companySetting) setCompanyName(companySetting.value);
             }
         } catch (err) {
@@ -58,13 +85,11 @@ const SettingsPage = () => {
       
       // Fallback local para percepção imediata
       localStorage.setItem('companyName', companyName);
-      localStorage.setItem('dailyChecklistLimit', dailyChecklistLimit);
 
       try {
           // 2. Salvar Configurações Globais (DB) - Apenas Admin
           if (isAdmin) {
               const settingsToSave = [
-                  { key: 'checklist_limit', value: dailyChecklistLimit },
                   { key: 'company_name', value: companyName }
               ];
 
@@ -82,9 +107,11 @@ const SettingsPage = () => {
       } catch (err: any) {
           console.error(err);
           if (err.message === "TABELA_INEXISTENTE") {
-             alert("ATENÇÃO: As configurações globais (Limite Diário) não foram salvas no servidor porque a tabela 'system_settings' não existe. \n\nPor favor, use o botão 'Copiar SQL de Configuração' abaixo e execute no Supabase.");
+             setShowSqlModal(true); // Abre o modal automaticamente
+             alert("ATENÇÃO: A tabela 'system_settings' não existe no banco de dados. \n\nO SQL necessário foi exibido na tela. Por favor, execute-o no Supabase.");
           } else {
-             alert('Configurações salvas localmente, mas houve erro ao salvar no servidor: ' + err.message);
+             const safeMsg = err.message || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+             alert('Configurações salvas localmente, mas houve erro ao salvar no servidor: ' + safeMsg);
           }
       } finally {
           setSavingSettings(false);
@@ -92,33 +119,8 @@ const SettingsPage = () => {
   };
 
   const copyConfigSql = () => {
-      const sql = `
--- Cria tabela de configurações globais
-CREATE TABLE IF NOT EXISTS public.system_settings (
-    key text PRIMARY KEY,
-    value text NOT NULL,
-    updated_at timestamp with time zone DEFAULT now()
-);
-
--- Habilita RLS
-ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
-
--- Política: Todos podem ler (para aplicar regras)
-CREATE POLICY "Todos leem settings" ON public.system_settings FOR SELECT USING (true);
-
--- Política: Apenas Admin pode alterar
-CREATE POLICY "Admin gerencia settings" ON public.system_settings FOR ALL USING (
-  exists (select 1 from public.profiles where id = auth.uid() and role = 'admin')
-);
-
--- Insere valores padrão
-INSERT INTO public.system_settings (key, value) VALUES 
-('checklist_limit', '2'),
-('company_name', 'Elétrica Marvil')
-ON CONFLICT (key) DO NOTHING;
-      `;
-      navigator.clipboard.writeText(sql);
-      alert("SQL copiado! Cole no Editor SQL do Supabase para corrigir a funcionalidade de configurações globais.");
+      navigator.clipboard.writeText(SQL_CONFIG_SCRIPT);
+      alert("SQL copiado para a área de transferência!");
   };
 
   const handleUpdatePassword = async (e: React.FormEvent) => {
@@ -190,7 +192,12 @@ ON CONFLICT (key) DO NOTHING;
           }
 
           const headers = Object.keys(data[0]).join(',');
-          const rows = data.map(obj => Object.values(obj).map(val => `"${val}"`).join(',')).join('\n');
+          const rows = data.map(obj => Object.values(obj).map(val => {
+             // Handle Objects/Arrays to avoid [object Object] in CSV
+             if (typeof val === 'object' && val !== null) return `"${JSON.stringify(val).replace(/"/g, '""')}"`;
+             return `"${val}"`;
+          }).join(',')).join('\n');
+          
           const csvContent = "data:text/csv;charset=utf-8," + headers + "\n" + rows;
           
           const encodedUri = encodeURI(csvContent);
@@ -202,7 +209,8 @@ ON CONFLICT (key) DO NOTHING;
           document.body.removeChild(link);
 
       } catch (err: any) {
-          alert('Erro ao exportar: ' + err.message);
+          const safeMsg = err.message || String(err);
+          alert('Erro ao exportar: ' + safeMsg);
       } finally {
           setLoading(false);
       }
@@ -302,8 +310,8 @@ ON CONFLICT (key) DO NOTHING;
                                     <Shield size={20} className="text-blue-400" />
                                     Geral e Aparência
                                 </h2>
-                                <button type="button" onClick={copyConfigSql} className="text-xs flex items-center gap-1 text-gray-500 hover:text-primary transition-colors border border-gray-700 px-2 py-1 rounded">
-                                    <Terminal size={12} /> Copiar SQL de Configuração
+                                <button type="button" onClick={() => setShowSqlModal(true)} className="text-xs flex items-center gap-1 text-gray-500 hover:text-primary transition-colors border border-gray-700 px-2 py-1 rounded">
+                                    <Terminal size={12} /> Ver SQL de Configuração
                                 </button>
                             </div>
 
@@ -366,19 +374,8 @@ ON CONFLICT (key) DO NOTHING;
                                         className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:border-primary focus:outline-none"
                                     />
                                 </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-400 mb-2 flex items-center gap-2">
-                                        <AlertTriangle size={16} /> Limite Diário de Checklists
-                                    </label>
-                                    <input 
-                                        type="number" 
-                                        min="1"
-                                        max="20"
-                                        value={dailyChecklistLimit} 
-                                        onChange={e => setDailyChecklistLimit(e.target.value)}
-                                        className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:border-primary focus:outline-none"
-                                    />
-                                    <p className="text-xs text-gray-500 mt-1">Configuração Global (Afeta todos eletricistas).</p>
+                                <div className="flex items-center justify-center p-4 bg-gray-900/50 rounded-lg border border-gray-800 text-gray-500 text-sm italic text-center">
+                                    <p>O limite diário de checklists foi removido. O sistema agora impede duplicidade do mesmo checklist na mesma obra/dia.</p>
                                 </div>
                             </div>
                         </div>
@@ -464,6 +461,43 @@ ON CONFLICT (key) DO NOTHING;
                         </div>
                     </div>
                 </form>
+
+                {/* SQL Modal */}
+                <Modal isOpen={showSqlModal} onClose={() => setShowSqlModal(false)} title="SQL de Configuração" maxWidth="lg">
+                    <div className="space-y-4">
+                        <div className="bg-blue-500/10 border border-blue-500/20 p-4 rounded-lg flex gap-3">
+                            <Info className="text-blue-400 shrink-0" size={20} />
+                            <div className="text-sm text-blue-200">
+                                <p className="font-bold mb-1">Como usar:</p>
+                                <ol className="list-decimal pl-4 space-y-1">
+                                    <li>Copie o código abaixo.</li>
+                                    <li>Vá para o painel do Supabase {'>'} SQL Editor.</li>
+                                    <li>Cole o código e clique em "Run".</li>
+                                </ol>
+                            </div>
+                        </div>
+                        
+                        <div className="bg-gray-900 p-4 rounded-lg border border-gray-700 overflow-x-auto relative group">
+                             <pre className="text-green-400 text-xs font-mono whitespace-pre-wrap leading-relaxed">
+                                {SQL_CONFIG_SCRIPT}
+                             </pre>
+                             <button 
+                                onClick={copyConfigSql}
+                                className="absolute top-2 right-2 bg-gray-800 hover:bg-gray-700 text-white p-2 rounded border border-gray-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Copiar"
+                             >
+                                <Copy size={14} />
+                             </button>
+                        </div>
+
+                        <div className="flex justify-end gap-3">
+                            <button onClick={() => setShowSqlModal(false)} className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700">Fechar</button>
+                            <button onClick={copyConfigSql} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-orange-600 flex items-center gap-2">
+                                <Copy size={16} /> Copiar Código
+                            </button>
+                        </div>
+                    </div>
+                </Modal>
             </>
         )}
     </div>
