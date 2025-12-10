@@ -1,18 +1,20 @@
 
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Database, Save, Download, Shield, CheckCircle, Server, Bell, Moon, Clock, FileText, ToggleLeft, ToggleRight, AlertTriangle, Info, Lock, Key, User } from 'lucide-react';
+import { Settings as SettingsIcon, Database, Save, Download, Shield, CheckCircle, Server, Bell, Moon, Clock, FileText, ToggleLeft, ToggleRight, AlertTriangle, Info, Lock, Key, User, Terminal } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { useAuth } from '../context/AuthContext';
 
 const SettingsPage = () => {
   const { user } = useAuth();
   
-  // Local Settings States (Global)
+  // Local Settings States (Global Logic via DB)
   const [companyName, setCompanyName] = useState(localStorage.getItem('companyName') || 'Elétrica Marvil');
+  const [dailyChecklistLimit, setDailyChecklistLimit] = useState(localStorage.getItem('dailyChecklistLimit') || '2');
+  
+  // Local Preferences (Browser specific)
   const [notificationsEnabled, setNotificationsEnabled] = useState(localStorage.getItem('notificationsEnabled') !== 'false');
   const [compactMode, setCompactMode] = useState(localStorage.getItem('compactMode') === 'true');
   const [checklistReminder, setChecklistReminder] = useState(localStorage.getItem('checklistReminder') || '08:00');
-  const [dailyChecklistLimit, setDailyChecklistLimit] = useState(localStorage.getItem('dailyChecklistLimit') || '2');
   
   // Password Change States
   const [newPassword, setNewPassword] = useState('');
@@ -20,19 +22,103 @@ const SettingsPage = () => {
   const [passwordLoading, setPasswordLoading] = useState(false);
   
   const [loading, setLoading] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [dbStatus, setDbStatus] = useState<'checking' | 'online' | 'error'>('checking');
 
   const isAdmin = user?.role === 'admin';
 
-  const handleSaveSettings = (e: React.FormEvent) => {
+  // Fetch Global Settings from DB
+  useEffect(() => {
+    const fetchGlobalSettings = async () => {
+        if (!isAdmin) return;
+        try {
+            const { data, error } = await supabase.from('system_settings').select('key, value');
+            if (data) {
+                const limitSetting = data.find(s => s.key === 'checklist_limit');
+                const companySetting = data.find(s => s.key === 'company_name');
+                
+                if (limitSetting) setDailyChecklistLimit(limitSetting.value);
+                if (companySetting) setCompanyName(companySetting.value);
+            }
+        } catch (err) {
+            console.log('Tabela de configurações ainda não criada ou erro de conexão.');
+        }
+    };
+    fetchGlobalSettings();
+  }, [isAdmin]);
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
       e.preventDefault();
-      localStorage.setItem('companyName', companyName);
+      setSavingSettings(true);
+
+      // 1. Salvar Preferências Locais (Browser)
       localStorage.setItem('notificationsEnabled', String(notificationsEnabled));
       localStorage.setItem('compactMode', String(compactMode));
       localStorage.setItem('checklistReminder', checklistReminder);
-      localStorage.setItem('dailyChecklistLimit', dailyChecklistLimit);
       
-      alert('Preferências do sistema salvas com sucesso!');
+      // Fallback local para percepção imediata
+      localStorage.setItem('companyName', companyName);
+      localStorage.setItem('dailyChecklistLimit', dailyChecklistLimit);
+
+      try {
+          // 2. Salvar Configurações Globais (DB) - Apenas Admin
+          if (isAdmin) {
+              const settingsToSave = [
+                  { key: 'checklist_limit', value: dailyChecklistLimit },
+                  { key: 'company_name', value: companyName }
+              ];
+
+              const { error } = await supabase.from('system_settings').upsert(settingsToSave, { onConflict: 'key' });
+
+              if (error) {
+                  // Se erro for 42P01 (undefined table), avisar usuário
+                  if (error.code === '42P01') {
+                      throw new Error("TABELA_INEXISTENTE");
+                  }
+                  throw error;
+              }
+          }
+          alert('Preferências salvas com sucesso!');
+      } catch (err: any) {
+          console.error(err);
+          if (err.message === "TABELA_INEXISTENTE") {
+             alert("ATENÇÃO: As configurações globais (Limite Diário) não foram salvas no servidor porque a tabela 'system_settings' não existe. \n\nPor favor, use o botão 'Copiar SQL de Configuração' abaixo e execute no Supabase.");
+          } else {
+             alert('Configurações salvas localmente, mas houve erro ao salvar no servidor: ' + err.message);
+          }
+      } finally {
+          setSavingSettings(false);
+      }
+  };
+
+  const copyConfigSql = () => {
+      const sql = `
+-- Cria tabela de configurações globais
+CREATE TABLE IF NOT EXISTS public.system_settings (
+    key text PRIMARY KEY,
+    value text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+-- Habilita RLS
+ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
+
+-- Política: Todos podem ler (para aplicar regras)
+CREATE POLICY "Todos leem settings" ON public.system_settings FOR SELECT USING (true);
+
+-- Política: Apenas Admin pode alterar
+CREATE POLICY "Admin gerencia settings" ON public.system_settings FOR ALL USING (
+  exists (select 1 from public.profiles where id = auth.uid() and role = 'admin')
+);
+
+-- Insere valores padrão
+INSERT INTO public.system_settings (key, value) VALUES 
+('checklist_limit', '2'),
+('company_name', 'Elétrica Marvil')
+ON CONFLICT (key) DO NOTHING;
+      `;
+      navigator.clipboard.writeText(sql);
+      alert("SQL copiado! Cole no Editor SQL do Supabase para corrigir a funcionalidade de configurações globais.");
   };
 
   const handleUpdatePassword = async (e: React.FormEvent) => {
@@ -64,7 +150,6 @@ const SettingsPage = () => {
           setConfirmPassword('');
           setPasswordLoading(false);
 
-          // Timeout pequeno para garantir que o React renderize o botão "normal" antes do alert bloquear a tela
           setTimeout(() => {
               alert("Senha atualizada com sucesso!");
           }, 100);
@@ -212,10 +297,16 @@ const SettingsPage = () => {
                     {/* General & UX */}
                     <div className="space-y-6 lg:col-span-2">
                         <div className="bg-secondary p-6 rounded-xl border border-gray-800 shadow-lg">
-                            <h2 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-                                <Shield size={20} className="text-blue-400" />
-                                Geral e Aparência
-                            </h2>
+                            <div className="flex justify-between items-start mb-6">
+                                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                    <Shield size={20} className="text-blue-400" />
+                                    Geral e Aparência
+                                </h2>
+                                <button type="button" onClick={copyConfigSql} className="text-xs flex items-center gap-1 text-gray-500 hover:text-primary transition-colors border border-gray-700 px-2 py-1 rounded">
+                                    <Terminal size={12} /> Copiar SQL de Configuração
+                                </button>
+                            </div>
+
                             <div className="space-y-6">
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400 mb-2">Nome da Empresa</label>
@@ -282,19 +373,19 @@ const SettingsPage = () => {
                                     <input 
                                         type="number" 
                                         min="1"
-                                        max="10"
+                                        max="20"
                                         value={dailyChecklistLimit} 
                                         onChange={e => setDailyChecklistLimit(e.target.value)}
                                         className="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:border-primary focus:outline-none"
                                     />
-                                    <p className="text-xs text-gray-500 mt-1">Qtd. máxima por eletricista/dia.</p>
+                                    <p className="text-xs text-gray-500 mt-1">Configuração Global (Afeta todos eletricistas).</p>
                                 </div>
                             </div>
                         </div>
 
                         <div className="flex justify-end">
-                            <button type="submit" className="w-full md:w-auto bg-primary hover:bg-orange-600 text-white px-8 py-3 rounded-lg font-bold flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95">
-                                <Save size={18} /> Salvar Configurações Globais
+                            <button type="submit" disabled={savingSettings} className="w-full md:w-auto bg-primary hover:bg-orange-600 text-white px-8 py-3 rounded-lg font-bold flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95 disabled:opacity-70">
+                                <Save size={18} /> {savingSettings ? 'Salvando...' : 'Salvar Configurações Globais'}
                             </button>
                         </div>
                     </div>
@@ -364,7 +455,7 @@ const SettingsPage = () => {
                                 Sobre o Sistema
                             </h2>
                             <div className="p-4 bg-gray-900 border border-gray-800 rounded-lg text-xs text-gray-400 space-y-2">
-                                <p>Versão do Sistema: <strong className="text-white">v1.3.0</strong></p>
+                                <p>Versão do Sistema: <strong className="text-white">v1.3.1 (Global Config)</strong></p>
                                 <p>ID da Instância: <span className="font-mono text-gray-500">{user?.id.substring(0,8)}...</span></p>
                                 <p className="pt-2 border-t border-gray-800 mt-2">
                                     Desenvolvido por <a href="https://www.tisemfronteira.com.br" target="_blank" rel="noopener noreferrer" className="text-primary hover:text-orange-400 font-bold">TI SEM FRONTEIRA</a>
