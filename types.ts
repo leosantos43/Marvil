@@ -1,4 +1,5 @@
 
+
 export type UserRole = 'admin' | 'eletricista' | 'cliente' | 'engenheiro' | 'arquiteto';
 
 export interface User {
@@ -59,7 +60,7 @@ export interface ChatMessage {
   is_me?: boolean;
 }
 
-export type ChecklistFieldType = 'text' | 'number' | 'boolean' | 'options';
+export type ChecklistFieldType = 'text' | 'number' | 'boolean' | 'options' | 'location';
 
 export interface ChecklistItemTemplate {
   id: string;
