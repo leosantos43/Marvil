@@ -1,5 +1,7 @@
 {
   "name": "Elétrica Marvil",
   "description": "Sistema de gestão de obras elétricas mobile-first com chat, checklists e controle financeiro.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "geolocation"
+  ]
 }
