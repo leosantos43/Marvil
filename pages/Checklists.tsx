@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, CheckSquare, Check, X, Settings, Trash2, GripVertical, Save, Briefcase, Loader2, Eye, FileText, MessageSquare, AlertTriangle, Filter, Calendar, Search } from 'lucide-react';
+import { Plus, CheckSquare, Check, X, Settings, Trash2, GripVertical, Save, Briefcase, Loader2, Eye, FileText, MessageSquare, AlertTriangle, Filter, Calendar, Search, MapPin, ExternalLink, Database, Copy, Info } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { ChecklistTemplate, ChecklistItemTemplate, Project, Checklist } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -25,6 +25,7 @@ const Checklists = () => {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [isProjectSelectOpen, setIsProjectSelectOpen] = useState(false);
+  const [locationLoading, setLocationLoading] = useState<Record<string, boolean>>({});
 
   // Viewer State (For Admins to see filled checklists)
   const [viewingChecklist, setViewingChecklist] = useState<Checklist | null>(null);
@@ -44,6 +45,59 @@ const Checklists = () => {
   // Delete Checklist History State
   const [isDeleteChecklistModalOpen, setIsDeleteChecklistModalOpen] = useState(false);
   const [checklistToDelete, setChecklistToDelete] = useState<string | null>(null);
+
+  // SQL Modal State
+  const [showSqlModal, setShowSqlModal] = useState(false);
+
+  const SQL_SCRIPT = `
+-- Tabela de Modelos de Checklist
+CREATE TABLE IF NOT EXISTS public.checklist_templates (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    nome text NOT NULL,
+    descricao text,
+    itens jsonb DEFAULT '[]'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Tabela de Checklists Preenchidos
+CREATE TABLE IF NOT EXISTS public.checklists (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    template_id uuid REFERENCES public.checklist_templates(id),
+    obra_id uuid REFERENCES public.projects(id) ON DELETE CASCADE,
+    responsavel_id uuid REFERENCES public.profiles(id),
+    data_referencia date NOT NULL,
+    status text DEFAULT 'concluido',
+    respostas jsonb DEFAULT '{}'::jsonb, -- Armazena respostas flexíveis incluindo { lat, lng, address }
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Habilita RLS
+ALTER TABLE public.checklist_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.checklists ENABLE ROW LEVEL SECURITY;
+
+-- Políticas de Segurança (RLS)
+-- Templates: Todos leem, apenas Admin gerencia
+DROP POLICY IF EXISTS "Todos leem templates" ON public.checklist_templates;
+CREATE POLICY "Todos leem templates" ON public.checklist_templates FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Admin gerencia templates" ON public.checklist_templates;
+CREATE POLICY "Admin gerencia templates" ON public.checklist_templates FOR ALL USING (
+  exists (select 1 from public.profiles where id = auth.uid() and role = 'admin')
+);
+
+-- Checklists: Leitura baseada em papel
+DROP POLICY IF EXISTS "Checklists policy" ON public.checklists;
+CREATE POLICY "Checklists policy" ON public.checklists FOR ALL USING (
+  -- Admin vê tudo
+  exists (select 1 from public.profiles where id = auth.uid() and role = 'admin')
+  OR
+  -- Engenheiro/Arquiteto vê obras que é responsável
+  exists (select 1 from public.projects where id = checklists.obra_id and responsavel_id = auth.uid())
+  OR
+  -- Eletricista vê os seus próprios (e pode inserir)
+  auth.uid() = responsavel_id
+);
+  `;
 
   const loadData = async () => {
       setLoading(true);
@@ -185,8 +239,51 @@ const Checklists = () => {
     setAnswers(prev => ({ ...prev, [itemId]: value }));
   };
 
+  const captureLocation = (itemId: string) => {
+    if (!navigator.geolocation) {
+        alert("Geolocalização não suportada pelo seu navegador.");
+        return;
+    }
+
+    setLocationLoading(prev => ({ ...prev, [itemId]: true }));
+
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            const { latitude, longitude } = position.coords;
+            let address = "Endereço não identificado";
+
+            // Reverse Geocoding (Nominatim OpenStreetMap - Free, No Key required for low volume)
+            try {
+                const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+                const data = await response.json();
+                if (data && data.display_name) {
+                    address = data.display_name;
+                }
+            } catch (err) {
+                console.error("Erro ao buscar endereço:", err);
+            }
+
+            handleAnswer(itemId, { lat: latitude, lng: longitude, address: address });
+            setLocationLoading(prev => ({ ...prev, [itemId]: false }));
+        },
+        (error) => {
+            console.error("Erro GPS:", error);
+            alert("Não foi possível obter a localização. Verifique as permissões do navegador.");
+            setLocationLoading(prev => ({ ...prev, [itemId]: false }));
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
   const handleSubmit = async () => {
     if (!selectedProject || !selectedTemplate || !user) return;
+    
+    // Check mandatory fields
+    const missing = selectedTemplate.itens.filter(item => item.obrigatorio && (answers[item.id] === undefined || answers[item.id] === '' || answers[item.id] === null));
+    if (missing.length > 0) {
+        alert(`Por favor, preencha o campo obrigatório: ${missing[0].titulo}`);
+        return;
+    }
     
     // VALIDATION: Prevent Duplicate Checklist (Same Template, Same Project, Same Day)
     const todayStr = new Date().toISOString().split('T')[0];
@@ -198,7 +295,7 @@ const Checklists = () => {
             .eq('responsavel_id', user.id)
             .eq('template_id', selectedTemplate.id)
             .eq('obra_id', selectedProject.id)
-            .eq('data_referencia', todayStr); // Verifica a data de referência exata
+            .eq('data_referencia', todayStr); 
 
         if (dupError) throw dupError;
 
@@ -370,6 +467,10 @@ const Checklists = () => {
       }
   };
 
+  const copySql = () => {
+      navigator.clipboard.writeText(SQL_SCRIPT);
+      alert('SQL copiado! Cole no SQL Editor do Supabase.');
+  };
 
   // --- Render Filling View ---
   if (selectedTemplate && selectedProject) {
@@ -445,6 +546,50 @@ const Checklists = () => {
                     </button>
                   ))}
                 </div>
+              )}
+
+              {item.tipo_campo === 'location' && (
+                  <div className="flex flex-col gap-2">
+                      {answers[item.id] ? (
+                          <div className="bg-gray-800 border border-green-500/30 p-4 rounded-lg flex flex-col gap-2">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3 text-green-400">
+                                    <MapPin size={24} />
+                                    <div>
+                                        <p className="text-sm font-bold">Localização Capturada</p>
+                                        <p className="text-xs font-mono">{answers[item.id].lat.toFixed(6)}, {answers[item.id].lng.toFixed(6)}</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => handleAnswer(item.id, null)} className="text-xs text-red-400 hover:text-red-300 underline">
+                                    Remover
+                                </button>
+                              </div>
+                              {answers[item.id].address && (
+                                  <div className="text-xs text-gray-300 bg-black/20 p-2 rounded border border-gray-700/50 mt-1">
+                                    {answers[item.id].address}
+                                  </div>
+                              )}
+                          </div>
+                      ) : (
+                          <button 
+                            onClick={() => captureLocation(item.id)} 
+                            disabled={locationLoading[item.id]}
+                            className="w-full py-4 bg-gray-800 border border-gray-700 hover:border-primary text-gray-300 hover:text-white rounded-lg flex items-center justify-center gap-2 transition-all"
+                          >
+                              {locationLoading[item.id] ? (
+                                  <>
+                                    <Loader2 className="animate-spin" size={20} />
+                                    Obtendo GPS e Endereço...
+                                  </>
+                              ) : (
+                                  <>
+                                    <MapPin size={20} className="text-primary" />
+                                    Capturar Minha Localização
+                                  </>
+                              )}
+                          </button>
+                      )}
+                  </div>
               )}
               
               {/* Optional Observation Field for Non-Text Fields */}
@@ -630,7 +775,10 @@ const Checklists = () => {
 
             {activeTab === 'templates' && (
                 <div className="space-y-4">
-                    <div className="hidden md:flex justify-end">
+                    <div className="flex justify-between items-center">
+                        <button onClick={() => setShowSqlModal(true)} className="hidden md:flex items-center gap-2 text-gray-500 hover:text-white text-xs border border-gray-700 px-3 py-1.5 rounded-lg transition-colors">
+                             <Database size={14} /> SQL do Banco
+                        </button>
                         <button onClick={() => openBuilder()} className="flex items-center gap-2 bg-primary text-white px-4 py-2 rounded-lg hover:bg-orange-600 transition-colors">
                             <Plus size={20} /> Criar Novo Modelo
                         </button>
@@ -697,6 +845,25 @@ const Checklists = () => {
                                         answer === true ? 
                                             <span className="flex items-center gap-1 text-success"><Check size={16} /> Sim / OK</span> : 
                                             <span className="flex items-center gap-1 text-error"><X size={16} /> Não / Ruim</span>
+                                    ) : item.tipo_campo === 'location' && answer ? (
+                                        <div className="flex flex-col gap-1">
+                                            <a 
+                                                href={`https://www.google.com/maps?q=${answer.lat},${answer.lng}`} 
+                                                target="_blank" 
+                                                rel="noopener noreferrer"
+                                                className="flex items-center gap-2 text-blue-400 hover:text-blue-300 underline bg-blue-500/10 p-2 rounded w-fit"
+                                            >
+                                                <MapPin size={16} />
+                                                <span>Ver no Mapa ({answer.lat.toFixed(5)}, {answer.lng.toFixed(5)})</span>
+                                                <ExternalLink size={12} />
+                                            </a>
+                                            {answer.address && (
+                                                <p className="text-xs text-gray-400 bg-gray-900/50 p-2 rounded border border-gray-700/50">
+                                                    <span className="font-bold text-gray-500 block mb-0.5">Endereço aproximado:</span>
+                                                    {answer.address}
+                                                </p>
+                                            )}
+                                        </div>
                                     ) : (
                                         <span>{answer?.toString() || '-'}</span>
                                     )}
@@ -784,6 +951,7 @@ const Checklists = () => {
                                         <option value="text">Texto</option>
                                         <option value="number">Número</option>
                                         <option value="options">Opções</option>
+                                        <option value="location">Localização (GPS)</option>
                                     </select>
                                     <label className="flex items-center text-xs text-gray-400 gap-1 cursor-pointer">
                                         <input type="checkbox" checked={item.obrigatorio} onChange={e => updateBuilderItem(idx, 'obrigatorio', e.target.checked)} className="rounded bg-gray-700 border-gray-600 text-primary focus:ring-primary" />
@@ -836,8 +1004,42 @@ const Checklists = () => {
               </div>
           </div>
       </Modal>
+
+      {/* SQL Modal */}
+      <Modal isOpen={showSqlModal} onClose={() => setShowSqlModal(false)} title="SQL de Configuração - Checklists" maxWidth="lg">
+            <div className="space-y-4">
+                <div className="bg-blue-500/10 border border-blue-500/20 p-4 rounded-lg flex gap-3">
+                    <Info className="text-blue-400 shrink-0" size={20} />
+                    <div className="text-sm text-blue-200">
+                        <p className="font-bold mb-1">Configuração do Banco de Dados</p>
+                        <p>Execute este script no SQL Editor do Supabase para garantir que as tabelas de checklists suportem todos os campos, incluindo geolocalização.</p>
+                    </div>
+                </div>
+                
+                <div className="bg-gray-900 p-4 rounded-lg border border-gray-700 overflow-x-auto relative group">
+                        <pre className="text-green-400 text-xs font-mono whitespace-pre-wrap leading-relaxed">
+                        {SQL_SCRIPT}
+                        </pre>
+                        <button 
+                        onClick={copySql}
+                        className="absolute top-2 right-2 bg-gray-800 hover:bg-gray-700 text-white p-2 rounded border border-gray-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Copiar"
+                        >
+                        <Copy size={14} />
+                        </button>
+                </div>
+
+                <div className="flex justify-end gap-3">
+                    <button onClick={() => setShowSqlModal(false)} className="px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700">Fechar</button>
+                    <button onClick={copySql} className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-orange-600 flex items-center gap-2">
+                        <Copy size={16} /> Copiar Código
+                    </button>
+                </div>
+            </div>
+      </Modal>
     </div>
   );
 };
 
 export default Checklists;
+
